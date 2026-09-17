@@ -1,0 +1,22 @@
+# Maxfiy kalitlar va tokenlar (Hech qachon GitHub'ga chiqmasligi shart!)
+.env
+
+# Yuklab olingan katta hajmli videolar va vaqtinchalik audio fayllar
+downloads/*
+!downloads/.gitkeep
+
+# Python kesh va vaqtinchalik fayllar
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+logs/
+
+# Virtual muhitlar
+env/
+venv/
+.venv/
+
+# Tizim fayllari
+.DS_Store
+Thumbs.db
