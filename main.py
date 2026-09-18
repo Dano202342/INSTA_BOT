@@ -16,6 +16,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from config import BOT_TOKEN, COOKIES_PATH
 from downloader import (
     is_instagram_url,
+    extract_instagram_url,
     download_instagram_video,
     cleanup_file,
     VideoInfo,
@@ -59,9 +60,9 @@ def clean_expired_videos():
             cleanup_file(data.get("file_path"))
             expired_ids.append(vid)
     for vid in expired_ids:
-        del ACTIVE_VIDEOS[vid]
+        ACTIVE_VIDEOS.pop(vid, None)
 
-def build_ai_keyboard(video_id: str) -> types.InlineKeyboardMarkup:
+def build_ai_keyboard(video_id: str, original_url: Optional[str] = None) -> types.InlineKeyboardMarkup:
     """AI video ishlov berish va tarjima asosiy tugmalarini yaratadi."""
     builder = InlineKeyboardBuilder()
     builder.button(
@@ -92,7 +93,14 @@ def build_ai_keyboard(video_id: str) -> types.InlineKeyboardMarkup:
         text="🖤 AI B&W Noir",
         callback_data=f"ai:noir:{video_id}"
     )
-    builder.adjust(1, 1, 2, 2, 1)
+    if original_url:
+        builder.button(
+            text="🔗 Instagram'da ochish",
+            url=original_url
+        )
+        builder.adjust(1, 1, 2, 2, 1, 1)
+    else:
+        builder.adjust(1, 1, 2, 2, 1)
     return builder.as_markup()
 
 def build_translation_keyboard(video_id: str) -> types.InlineKeyboardMarkup:
@@ -197,6 +205,8 @@ async def handle_instagram_link(message: types.Message, bot: Bot):
         )
         return
 
+    clean_url = extract_instagram_url(text) or text.strip()
+
     status_msg = await message.answer("⏳ <i>Video Instagram'dan yuklab olinmoqda...</i>")
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_VIDEO)
 
@@ -204,20 +214,23 @@ async def handle_instagram_link(message: types.Message, bot: Bot):
     video_id = uuid.uuid4().hex[:8]
 
     try:
-        video_info = await download_instagram_video(text, cookies_path=COOKIES_PATH)
+        video_info = await download_instagram_video(clean_url, cookies_path=COOKIES_PATH)
 
         # Videoni keshga joylash
         ACTIVE_VIDEOS[video_id] = {
             "file_path": video_info.file_path,
             "created_at": time.time(),
-            "uploader": video_info.uploader or "Instagram"
+            "uploader": video_info.uploader or "Instagram",
+            "original_url": clean_url
         }
 
-        caption_lines = ["🎬 <b>Instagram Video</b> (Original sifat)"]
-        if video_info.uploader:
-            caption_lines.append(f"👤 <b>Muallif:</b> @{video_info.uploader}")
+        caption_lines = ["🎬 <b>Instagram Video</b>\n"]
+        if video_info.uploader and video_info.uploader != "Instagram":
+            caption_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{video_info.uploader}\">@{video_info.uploader}</a>")
+        caption_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{clean_url}\">{clean_url}</a>")
         if video_info.filesize_mb:
             caption_lines.append(f"📦 <b>Hajmi:</b> {video_info.filesize_mb} MB")
+        caption_lines.append(f"🤖 <b>Yuklab olindi:</b> @Iinstavideo_bot")
         caption_lines.append("\n<i>🌐 Videoni tarjima qilish yoki AI orqali tiniqlashtirish uchun quyidagi tugmalardan birini bosing:</i>")
 
         caption = "\n".join(caption_lines)
@@ -232,7 +245,7 @@ async def handle_instagram_link(message: types.Message, bot: Bot):
                     width=video_info.width,
                     height=video_info.height,
                     supports_streaming=True,
-                    reply_markup=build_ai_keyboard(video_id),
+                    reply_markup=build_ai_keyboard(video_id, original_url=clean_url),
                     request_timeout=300
                 )
                 break
@@ -339,15 +352,24 @@ async def handle_translation_action(callback: CallbackQuery, bot: Bot):
 
         src_code = dubbed_result.get("detected_lang", "auto").split("-")[0].upper()
 
-        engine_text = f"🤖 <b>Dvigatel:</b> {dubbed_result.get('ai_engine', 'AI')}\n" if dubbed_result.get("ai_engine") else ""
+        uploader = ACTIVE_VIDEOS[video_id].get("uploader", "Instagram")
+        orig_url = ACTIVE_VIDEOS[video_id].get("original_url", "")
+
+        meta_lines = []
+        if uploader and uploader != "Instagram":
+            meta_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{uploader}\">@{uploader}</a>")
+        if orig_url:
+            meta_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{orig_url}\">{orig_url}</a>")
+        meta_block = "\n".join(meta_lines) + "\n\n" if meta_lines else ""
 
         caption = (
             f"🌐 <b>Video AI Dublyaj ({lang_info['flag']} {lang_info['name']})</b>\n\n"
+            f"{meta_block}"
             f"🗣 <b>Asl nutq ({src_code}):</b>\n<i>\"{orig_preview}\"</i>\n\n"
             f"📝 <b>Tarjima:</b>\n<i>\"{trans_preview}\"</i>\n\n"
             f"📦 <b>Hajmi:</b> {dubbed_result['file_size_mb']} MB\n"
             f"{engine_text}"
-            f"⚡️ @Iinstavideo_bot"
+            f"🤖 <b>Yuklab olindi:</b> @Iinstavideo_bot"
         )
 
         video_file = FSInputFile(output_path)
@@ -420,12 +442,23 @@ async def handle_ai_callback(callback: CallbackQuery, bot: Bot):
     try:
         enhanced_path, size_mb = await enhance_video_ai(source_path, mode=mode)
 
+        uploader = ACTIVE_VIDEOS[video_id].get("uploader", "Instagram")
+        orig_url = ACTIVE_VIDEOS[video_id].get("original_url", "")
+
+        meta_lines = []
+        if uploader and uploader != "Instagram":
+            meta_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{uploader}\">@{uploader}</a>")
+        if orig_url:
+            meta_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{orig_url}\">{orig_url}</a>")
+        meta_block = "\n".join(meta_lines) + "\n\n" if meta_lines else ""
+
         caption = (
             f"<b>{mode_info['title']}</b>\n\n"
+            f"{meta_block}"
             f"ℹ️ {mode_info['description']}\n"
             f"📦 <b>Hajmi:</b> {size_mb} MB\n"
             f"🔊 <i>Asl ovoz to'liq saqlandi.</i>\n\n"
-            f"⚡️ @Iinstavideo_bot"
+            f"🤖 <b>Yuklab olindi:</b> @Iinstavideo_bot"
         )
 
         video_file = FSInputFile(enhanced_path)
