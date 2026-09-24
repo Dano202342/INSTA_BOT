@@ -494,7 +494,7 @@ async def main():
     print("[+] Telegram'da botingizga kirib /start yuboring.", flush=True)
     print("=" * 60 + "\n", flush=True)
 
-    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.delete_webhook(drop_pending_updates=False)
     try:
         await dp.start_polling(bot)
     finally:
