@@ -13,7 +13,11 @@ DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloa
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 def get_ffmpeg_exe() -> str:
-    """imageio_ffmpeg orqali o'rnatilgan ffmpeg binar faylini topadi."""
+    """imageio_ffmpeg yoki tizim ffmpeg binar faylini topadi."""
+    import shutil
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        return sys_ffmpeg
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
@@ -110,3 +114,57 @@ def _process_video_sync(input_path: str, mode: str) -> Tuple[str, float]:
 async def enhance_video_ai(input_path: str, mode: str = "sharpen") -> Tuple[str, float]:
     """Asinxron wrapper: FFmpeg jarayonini boshqa thread'da yurgizadi."""
     return await asyncio.to_thread(_process_video_sync, input_path, mode)
+
+
+def _change_resolution_sync(input_path: str, target_res: int = 720) -> Tuple[str, float]:
+    """
+    Sinxron ravishda videoni 720p yoki 1080p sifatga o'tkazadi (libx264, yuv420p).
+    - Gorizontal video (iw > ih) bo'lsa: balandligi target_res, kengligi avtomatik.
+    - Vertikal video (ih >= iw) bo'lsa: kengligi target_res, balandligi avtomatik.
+    - Barcha qurilmalarda ochilishi uchun universal H.264 va AAC kodeklar qo'llaniladi.
+    """
+    ffmpeg_bin = get_ffmpeg_exe()
+    target_res = 1080 if target_res >= 1080 else 720
+
+    vf = f"scale='if(gt(iw,ih),-2,{target_res})':'if(gt(iw,ih),{target_res},-2)'"
+
+    unique_id = uuid.uuid4().hex[:8]
+    output_filename = f"video_{target_res}p_{int(time.time())}_{unique_id}.mp4"
+    output_path = os.path.join(DOWNLOAD_DIR, output_filename)
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i", input_path,
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "veryfast",
+        "-crf", "22",
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        output_path
+    ]
+
+    logger.info(f"Video {target_res}p sifatga o'tkazilmoqda: {output_filename}")
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if result.returncode != 0:
+        err_msg = result.stderr.decode("utf-8", errors="ignore")
+        logger.error(f"FFmpeg o'lcham o'zgartirish xatoligi: {err_msg}")
+        raise RuntimeError(f"Video {target_res}p formatiga o'tkazilmadi.")
+
+    if not os.path.exists(output_path):
+        raise FileNotFoundError("Chiqish fayli yaratilmadi.")
+
+    size_mb = round(os.path.getsize(output_path) / (1024 * 1024), 2)
+    return output_path, size_mb
+
+
+async def change_video_resolution(input_path: str, target_res: int = 720) -> Tuple[str, float]:
+    """Asinxron wrapper: Video o'lchamini o'zgartirishni alohida thread'da bajaradi."""
+    return await asyncio.to_thread(_change_resolution_sync, input_path, target_res)
+

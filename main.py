@@ -2,8 +2,9 @@ import os
 import sys
 import time
 import uuid
+import html
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode, ChatAction
@@ -24,11 +25,8 @@ from downloader import (
 )
 from video_enhancer import (
     enhance_video_ai,
+    change_video_resolution,
     AI_MODES,
-)
-from video_translator import (
-    translate_and_dub_video,
-    TARGET_LANGUAGES,
 )
 
 # Windows terminalida UTF-8 belgilar to'g'ri chiqishi uchun
@@ -48,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 dp = Dispatcher()
 
-# Faol videolar keshi: video_id -> { "file_path": str, "created_at": float, "uploader": str }
+# Faol videolar keshi: video_id -> { "file_path": str, "created_at": float, "uploader": str, "original_url": str }
 ACTIVE_VIDEOS: Dict[str, Dict[str, Any]] = {}
 
 def clean_expired_videos():
@@ -63,15 +61,19 @@ def clean_expired_videos():
         ACTIVE_VIDEOS.pop(vid, None)
 
 def build_ai_keyboard(video_id: str, original_url: Optional[str] = None) -> types.InlineKeyboardMarkup:
-    """AI video ishlov berish va tarjima asosiy tugmalarini yaratadi."""
+    """AI video ishlov berish va sifat tanlash (720p / 1080p) asosiy tugmalarini yaratadi."""
     builder = InlineKeyboardBuilder()
+    builder.button(
+        text="📥 720p (HD)",
+        callback_data=f"dl:720:{video_id}"
+    )
+    builder.button(
+        text="📥 1080p (Full HD)",
+        callback_data=f"dl:1080:{video_id}"
+    )
     builder.button(
         text="✨ AI Tiniqlashtirish (Ultra HD)",
         callback_data=f"ai:sharpen:{video_id}"
-    )
-    builder.button(
-        text="🌐 Video Tarjima (AI Dublyaj)",
-        callback_data=f"tr_menu:{video_id}"
     )
     builder.button(
         text="🌈 AI HDR",
@@ -98,47 +100,27 @@ def build_ai_keyboard(video_id: str, original_url: Optional[str] = None) -> type
             text="🔗 Instagram'da ochish",
             url=original_url
         )
-        builder.adjust(1, 1, 2, 2, 1, 1)
+        builder.adjust(2, 1, 2, 2, 1, 1)
     else:
-        builder.adjust(1, 1, 2, 2, 1)
-    return builder.as_markup()
-
-def build_translation_keyboard(video_id: str) -> types.InlineKeyboardMarkup:
-    """Tarjima tillarini tanlash menyusi."""
-    builder = InlineKeyboardBuilder()
-    builder.button(
-        text="🇺🇿 O'zbekcha Dublyaj",
-        callback_data=f"tr:uz:{video_id}"
-    )
-    builder.button(
-        text="🇷🇺 Ruscha (Озвучка)",
-        callback_data=f"tr:ru:{video_id}"
-    )
-    builder.button(
-        text="🇬🇧 English Voiceover",
-        callback_data=f"tr:en:{video_id}"
-    )
-    builder.button(
-        text="⬅️ Asosiy menyuga qaytish",
-        callback_data=f"tr_back:{video_id}"
-    )
-    builder.adjust(1, 1, 1, 1)
+        builder.adjust(2, 1, 2, 2, 1)
     return builder.as_markup()
 
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     """Xush kelibsiz xabari va imkoniyatlar ro'yxati."""
-    user_name = message.from_user.first_name if message.from_user else "Foydalanuvchi"
+    raw_user_name = message.from_user.first_name if message.from_user and message.from_user.first_name else "Foydalanuvchi"
+    user_name = html.escape(raw_user_name)
     text = (
         f"Assalomu alaykum, <b>{user_name}</b>! 👋\n\n"
-        "Men <b>Instagram, AI Tiniqlashtiruvchi va Video Tarjimon</b> botman! 🚀\n\n"
+        "Men <b>Instagram Video Yuklovchi va AI Sifat Botiman</b>! 🚀\n\n"
         "<b>Mening imkoniyatlarim:</b>\n"
         "📥 <b>Instagram Video:</b> Reels yoki Post havolasini yuboring, original sifatda yuklab beraman.\n"
-        "🌐 <b>Video Tarjima & Dublyaj:</b> Videodagi nutqni <b>O'zbek, Rus va Ingliz</b> tillariga tabiiy ovoz bilan tarjima qilib beraman.\n"
+        "📐 <b>720p / 1080p Sifat:</b> Videoni istalgan hajmda (720p HD yoki 1080p Full HD) tezkor yuklab oling.\n"
         "✨ <b>AI Tiniqlashtirish:</b> Xira videolarni Ultra HD darajasiga keltiradi.\n"
-        "🎥 <b>Ixtiyoriy video:</b> Menga shunchaki biror video tashlasangiz ham uni tarjima yoki tiniqlashtirib beraman!\n\n"
-        "<i>Sinash uchun Instagram havolasi yoki biror video yuboring:</i>"
+        "🎨 <b>AI Rang filtrlari:</b> HDR, Kinematik, Cyberpunk, Retro VHS va Noir rejimlari.\n"
+        "🎥 <b>Ixtiyoriy video:</b> O'zingiz video tashlasangiz ham uni sifatini oshirib yoki o'lchamini o'zgartirib beraman!\n\n"
+        "<i>Sinash uchun Instagram havolasi yoki video yuboring:</i>"
     )
     await message.answer(text)
 
@@ -149,9 +131,10 @@ async def cmd_help(message: types.Message):
     text = (
         "📖 <b>Botdan foydalanish qo'llanmasi:</b>\n\n"
         "1. <b>Instagramdan yuklash:</b> Instagram video/reels havolasini botga yuboring.\n"
-        "2. <b>Video Tarjima (AI Dublyaj):</b> Video tagidagi <b>🌐 Video Tarjima</b> tugmasini bosing va tilni tanlang (🇺🇿 O'zbek, 🇷🇺 Rus, 🇬🇧 Ingliz). Bot videodagi ovozni aniqlab, tanlangan tilda dublyaj qilib yuboradi!\n"
+        "2. <b>Sifatni tanlash:</b> Video ostidagi <b>📥 720p (HD)</b> yoki <b>📥 1080p (Full HD)</b> tugmalari orqali kerakli formatda yuklab oling.\n"
         "3. <b>AI Tiniqlashtirish:</b> <b>✨ AI Tiniqlashtirish</b> tugmasi orqali videoni xiralikdan tozalab, yuqori ravshanlikka erishing.\n"
-        "4. <b>O'z videolaringiz:</b> Galereyangizdagi videolarni ham to'g'ridan-to'g'ri botga yuborishingiz mumkin."
+        "4. <b>AI Rang effektlari:</b> HDR, Kinematik, Neon Cyberpunk kabi maxsus rang uslublarini qo'llang.\n"
+        "5. <b>O'z videolaringiz:</b> Galereyangizdagi videolarni ham to'g'ridan-to'g'ri botga yuborishingiz mumkin."
     )
     await message.answer(text)
 
@@ -175,15 +158,17 @@ async def handle_direct_video(message: types.Message, bot: Bot):
         file = await bot.get_file(video.file_id)
         await bot.download_file(file.file_path, destination=local_path)
 
+        uploader_name = message.from_user.first_name if message.from_user and message.from_user.first_name else "Foydalanuvchi"
         ACTIVE_VIDEOS[video_id] = {
             "file_path": local_path,
             "created_at": time.time(),
-            "uploader": message.from_user.first_name if message.from_user else "Foydalanuvchi"
+            "uploader": uploader_name,
+            "original_url": None
         }
 
         await status_msg.edit_text(
             "🎬 <b>Video muvaffaqiyatli qabul qilindi!</b>\n\n"
-            "Quyidagi funksiyalardan birini tanlang:",
+            "Quyidagi sifat yoki AI funksiyalaridan birini tanlang:",
             reply_markup=build_ai_keyboard(video_id)
         )
     except Exception as e:
@@ -210,7 +195,7 @@ async def handle_instagram_link(message: types.Message, bot: Bot):
     status_msg = await message.answer("⏳ <i>Video Instagram'dan yuklab olinmoqda...</i>")
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_VIDEO)
 
-    video_info: VideoInfo | None = None
+    video_info: Optional[VideoInfo] = None
     video_id = uuid.uuid4().hex[:8]
 
     try:
@@ -226,12 +211,14 @@ async def handle_instagram_link(message: types.Message, bot: Bot):
 
         caption_lines = ["🎬 <b>Instagram Video</b>\n"]
         if video_info.uploader and video_info.uploader != "Instagram":
-            caption_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{video_info.uploader}\">@{video_info.uploader}</a>")
-        caption_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{clean_url}\">{clean_url}</a>")
+            safe_uploader = html.escape(str(video_info.uploader))
+            caption_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{safe_uploader}\">@{safe_uploader}</a>")
+        safe_url = html.escape(str(clean_url))
+        caption_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{safe_url}\">{safe_url}</a>")
         if video_info.filesize_mb:
             caption_lines.append(f"📦 <b>Hajmi:</b> {video_info.filesize_mb} MB")
         caption_lines.append(f"🤖 <b>Yuklab olindi:</b> @Iinstavideo_bot")
-        caption_lines.append("\n<i>🌐 Videoni tarjima qilish yoki AI orqali tiniqlashtirish uchun quyidagi tugmalardan birini bosing:</i>")
+        caption_lines.append("\n<i>📥 Sifatni tanlash yoki AI orqali tiniqlashtirish uchun quyidagi tugmalardan birini bosing:</i>")
 
         caption = "\n".join(caption_lines)
 
@@ -277,43 +264,21 @@ async def handle_instagram_link(message: types.Message, bot: Bot):
             cleanup_file(video_info.file_path)
 
 
-@dp.callback_query(F.data.startswith("tr_menu:"))
-async def handle_translation_menu(callback: CallbackQuery):
-    """Tarjima tillari menyusiga o'tish."""
-    video_id = callback.data.split(":")[1]
-    if video_id not in ACTIVE_VIDEOS or not os.path.exists(ACTIVE_VIDEOS[video_id]["file_path"]):
-        await callback.answer("⚠️ Ushbu video muddati tugagan. Iltimos, videoni qayta yuboring.", show_alert=True)
-        return
-
-    await callback.message.edit_reply_markup(
-        reply_markup=build_translation_keyboard(video_id)
-    )
-    await callback.answer("Tarjima tilini tanlang")
-
-
-@dp.callback_query(F.data.startswith("tr_back:"))
-async def handle_translation_back(callback: CallbackQuery):
-    """Asosiy AI menyusiga qaytish."""
-    video_id = callback.data.split(":")[1]
-    if video_id not in ACTIVE_VIDEOS or not os.path.exists(ACTIVE_VIDEOS[video_id]["file_path"]):
-        await callback.answer("⚠️ Ushbu video muddati tugagan. Iltimos, videoni qayta yuboring.", show_alert=True)
-        return
-
-    await callback.message.edit_reply_markup(
-        reply_markup=build_ai_keyboard(video_id)
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("tr:"))
-async def handle_translation_action(callback: CallbackQuery, bot: Bot):
-    """Videoni tanlangan tilga tarjima va dublyaj qilish."""
+@dp.callback_query(F.data.startswith("dl:"))
+async def handle_download_quality_callback(callback: CallbackQuery, bot: Bot):
+    """720p yoki 1080p sifatdagi videoni tayyorlab yuborish."""
     parts = callback.data.split(":")
     if len(parts) != 3:
         await callback.answer("⚠️ Noma'lum buyruq.", show_alert=True)
         return
 
-    _, target_lang, video_id = parts
+    _, quality_str, video_id = parts
+    try:
+        target_res = int(quality_str)
+    except ValueError:
+        target_res = 720
+
+    quality_label = f"{target_res}p {'HD' if target_res == 720 else 'Full HD'}"
 
     if video_id not in ACTIVE_VIDEOS or not os.path.exists(ACTIVE_VIDEOS[video_id]["file_path"]):
         await callback.answer(
@@ -322,57 +287,42 @@ async def handle_translation_action(callback: CallbackQuery, bot: Bot):
         )
         return
 
-    lang_info = TARGET_LANGUAGES.get(target_lang, TARGET_LANGUAGES["uz"])
-    await callback.answer(f"{lang_info['flag']} {lang_info['name']} dublyaji tanlandi!")
+    await callback.answer(f"📥 {quality_label} tayyorlanmoqda...")
 
     status_msg = await callback.message.reply(
-        f"⏳ <b>Video {lang_info['flag']} {lang_info['name']}ga tarjima qilinmoqda...</b>\n\n"
-        f"<i>1. Nutq aniqlanmoqda...</i>\n"
-        f"<i>2. Matn tarjima qilinmoqda...</i>\n"
-        f"<i>3. AI neyron ovoz bilan dublyaj qilinmoqda...</i>\n\n"
-        f"Iltimos, biroz kuting (15-40 soniya)..."
+        f"⏳ <b>Video {quality_label} formatda tayyorlanmoqda...</b>\n"
+        f"<i>Iltimos, biroz kuting (5-15 soniya)...</i>"
     )
 
     await bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_VIDEO)
 
     source_path = ACTIVE_VIDEOS[video_id]["file_path"]
-    dubbed_result = None
+    processed_path = None
 
     try:
-        dubbed_result = await translate_and_dub_video(source_path, target_lang=target_lang)
-        output_path = dubbed_result["output_video_path"]
-
-        orig_preview = dubbed_result["original_text"]
-        if len(orig_preview) > 200:
-            orig_preview = orig_preview[:200] + "..."
-
-        trans_preview = dubbed_result["translated_text"]
-        if len(trans_preview) > 200:
-            trans_preview = trans_preview[:200] + "..."
-
-        src_code = dubbed_result.get("detected_lang", "auto").split("-")[0].upper()
+        processed_path, size_mb = await change_video_resolution(source_path, target_res=target_res)
 
         uploader = ACTIVE_VIDEOS[video_id].get("uploader", "Instagram")
         orig_url = ACTIVE_VIDEOS[video_id].get("original_url", "")
 
         meta_lines = []
         if uploader and uploader != "Instagram":
-            meta_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{uploader}\">@{uploader}</a>")
+            safe_uploader = html.escape(str(uploader))
+            meta_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{safe_uploader}\">@{safe_uploader}</a>")
         if orig_url:
-            meta_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{orig_url}\">{orig_url}</a>")
+            safe_url = html.escape(str(orig_url))
+            meta_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{safe_url}\">{safe_url}</a>")
         meta_block = "\n".join(meta_lines) + "\n\n" if meta_lines else ""
 
         caption = (
-            f"🌐 <b>Video AI Dublyaj ({lang_info['flag']} {lang_info['name']})</b>\n\n"
+            f"📥 <b>Instagram Video ({quality_label})</b>\n\n"
             f"{meta_block}"
-            f"🗣 <b>Asl nutq ({src_code}):</b>\n<i>\"{orig_preview}\"</i>\n\n"
-            f"📝 <b>Tarjima:</b>\n<i>\"{trans_preview}\"</i>\n\n"
-            f"📦 <b>Hajmi:</b> {dubbed_result['file_size_mb']} MB\n"
-            f"{engine_text}"
+            f"📦 <b>Hajmi:</b> {size_mb} MB\n"
+            f"📐 <b>Sifat:</b> {quality_label}\n"
             f"🤖 <b>Yuklab olindi:</b> @Iinstavideo_bot"
         )
 
-        video_file = FSInputFile(output_path)
+        video_file = FSInputFile(processed_path)
         for attempt in range(3):
             try:
                 await callback.message.answer_video(
@@ -383,7 +333,7 @@ async def handle_translation_action(callback: CallbackQuery, bot: Bot):
                 )
                 break
             except Exception as up_err:
-                logger.warning(f"Dublyaj video yuborish urinishi {attempt+1}/3: {up_err}")
+                logger.warning(f"{quality_label} video yuborish urinishi {attempt+1}/3: {up_err}")
                 if attempt == 2:
                     raise up_err
                 import asyncio
@@ -394,19 +344,16 @@ async def handle_translation_action(callback: CallbackQuery, bot: Bot):
         except Exception:
             pass
 
-    except ValueError as ve:
-        logger.info(f"Videoda nutq topilmadi: {ve}")
-        await status_msg.edit_text("ℹ️ Ushbu videoda tushunarli inson nutqi aniqlanmadi yoki video faqat musiqadan iborat.")
     except Exception as e:
-        logger.error(f"Video tarjimada xatolik: {e}", exc_info=True)
-        await status_msg.edit_text("❌ Videoni tarjima qilishda xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
+        logger.error(f"{quality_label} videoni tayyorlashda xatolik: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ Videoni {quality_label} formatga o'tkazishda xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
     finally:
         import gc
         gc.collect()
         import asyncio
         await asyncio.sleep(0.5)
-        if dubbed_result and "output_video_path" in dubbed_result:
-            cleanup_file(dubbed_result["output_video_path"])
+        if processed_path:
+            cleanup_file(processed_path)
 
 
 @dp.callback_query(F.data.startswith("ai:"))
@@ -447,9 +394,11 @@ async def handle_ai_callback(callback: CallbackQuery, bot: Bot):
 
         meta_lines = []
         if uploader and uploader != "Instagram":
-            meta_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{uploader}\">@{uploader}</a>")
+            safe_uploader = html.escape(str(uploader))
+            meta_lines.append(f"👤 <b>Muallif:</b> <a href=\"https://instagram.com/{safe_uploader}\">@{safe_uploader}</a>")
         if orig_url:
-            meta_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{orig_url}\">{orig_url}</a>")
+            safe_url = html.escape(str(orig_url))
+            meta_lines.append(f"🔗 <b>Instagram:</b> <a href=\"{safe_url}\">{safe_url}</a>")
         meta_block = "\n".join(meta_lines) + "\n\n" if meta_lines else ""
 
         caption = (
@@ -495,12 +444,42 @@ async def handle_ai_callback(callback: CallbackQuery, bot: Bot):
             cleanup_file(enhanced_path)
 
 
+async def start_dummy_health_server():
+    """Railway va boshqa cloud platformalar healthcheck tekshiruvi uchun yengil HTTP server."""
+    port_str = os.getenv("PORT")
+    if not port_str:
+        return
+    try:
+        port = int(port_str)
+        from aiohttp import web
+        app = web.Application()
+
+        async def health(request):
+            return web.Response(text="OK - Instagram Bot is running!")
+
+        app.router.add_get("/", health)
+        app.router.add_get("/health", health)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"Railway Healthcheck HTTP server ishga tushirildi: 0.0.0.0:{port}")
+    except Exception as e:
+        logger.warning(f"Healthcheck serverni ishga tushirishda xatolik: {e}")
+
+
 async def main():
     if not BOT_TOKEN or ":" not in BOT_TOKEN:
         print("\n" + "=" * 65)
-        print("XATOLIK: .env faylida yaroqli BOT_TOKEN ko'rsatilmagan!")
+        print("XATOLIK: .env yoki Railway Variables'da yaroqli BOT_TOKEN ko'rsatilmagan!")
+        print("Railway Dashboard -> Service -> Variables bo'limiga BOT_TOKEN qo'shing!")
         print("=" * 65 + "\n")
+        import asyncio
+        await asyncio.sleep(60)
         return
+
+    # Railway healthcheck serverini ishga tushiramiz (agar PORT berilgan bo'lsa)
+    await start_dummy_health_server()
 
     # Katta video fayllar uzatilishi uchun 300 soniyalik timeout
     session = AiohttpSession(timeout=300.0)
@@ -511,7 +490,7 @@ async def main():
     )
 
     print("\n" + "=" * 60, flush=True)
-    print("[+] AI & Tarjimon Bot muvaffaqiyatli ishga tushirildi!", flush=True)
+    print("[+] Instagram Downloader & AI Bot muvaffaqiyatli ishga tushirildi!", flush=True)
     print("[+] Telegram'da botingizga kirib /start yuboring.", flush=True)
     print("=" * 60 + "\n", flush=True)
 
