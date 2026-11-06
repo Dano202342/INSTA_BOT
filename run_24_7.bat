@@ -1,8 +1,8 @@
 @echo off
-title Instagram AI Bot (24/7 Auto-Restart)
+title Universal Media Downloader Bot (24/7 Auto-Restart)
 chcp 65001 >nul
 echo ========================================================
-echo   Instagram Downloader & AI Bot (24/7 Ishga Tushirildi)
+echo   Universal Media Downloader Bot (24/7 Ishga Tushirildi)
 echo ========================================================
 echo.
 
